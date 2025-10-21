@@ -1,0 +1,20 @@
+# Example variable values for Terraform configuration
+
+# Project ID for GCP
+project_id = "your-gcp-project-id"
+
+# Name of the VM instance
+instance_name = "example-vm"
+
+# Machine type for the VM instance
+machine_type = "f1-micro"  # Free tier eligible
+
+# Zone where the VM will be deployed
+zone = "us-central1-a"
+
+# Image to use for the VM instance
+image = "debian-cloud/debian-10"  # Example image
+
+# Network settings
+network = "default"
+subnetwork = "default"
