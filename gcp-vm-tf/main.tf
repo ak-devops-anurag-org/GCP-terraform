@@ -1,20 +1,36 @@
-resource "google_compute_firewall" "allow-ssh" {
-  name    = "allow-ssh"
-  network = "default"
+# Create a custom VPC network
+resource "google_compute_network" "custom_vpc" {
+  name                    = "ak-custom-network"
+  auto_create_subnetworks = false
+}
+
+# Create a subnetwork in a specific region
+resource "google_compute_subnetwork" "custom_subnet" {
+  name          = "ak-custom-subnet"
+  ip_cidr_range = "10.0.0.0/24"
+  region        = "asia-south1"
+  network       = google_compute_network.custom_vpc.id
+}
+
+# Allow SSH
+resource "google_compute_firewall" "allow_ssh" {
+  name    = "ak-allow-ssh"
+  network = google_compute_network.custom_vpc.name
 
   allow {
     protocol = "tcp"
     ports    = ["22"]
   }
 
-  source_ranges = ["0.0.0.0/0"]  # Open to all IPs
+  source_ranges = ["0.0.0.0/0"]
   target_tags   = ["allow-ssh"]
   direction     = "INGRESS"
 }
 
-resource "google_compute_firewall" "allow-http" {
-  name    = "allow-http"
-  network = "default"
+# Allow HTTP
+resource "google_compute_firewall" "allow_http" {
+  name    = "ak-allow-http"
+  network = google_compute_network.custom_vpc.name
 
   allow {
     protocol = "tcp"
@@ -26,9 +42,10 @@ resource "google_compute_firewall" "allow-http" {
   direction     = "INGRESS"
 }
 
-resource "google_compute_firewall" "allow-https" {
-  name    = "allow-https"
-  network = "default"
+# Allow HTTPS
+resource "google_compute_firewall" "allow_https" {
+  name    = "ak-allow-https"
+  network = google_compute_network.custom_vpc.name
 
   allow {
     protocol = "tcp"
@@ -40,12 +57,13 @@ resource "google_compute_firewall" "allow-https" {
   direction     = "INGRESS"
 }
 
+# Compute instance
 resource "google_compute_instance" "vm_instance" {
-  name         = "ak-tf-compute-instance"
-  machine_type = "e2-micro"  # Modern free-tier eligible
+  name         = "ak-tf-instance"
+  machine_type = "e2-micro"
   zone         = "asia-south1-a"
 
-  tags = ["ak", "tf", "compute-instance", "allow-ssh", "allow-http", "allow-https"]
+  tags = ["allow-ssh", "allow-http", "allow-https"]
 
   boot_disk {
     initialize_params {
@@ -58,16 +76,103 @@ resource "google_compute_instance" "vm_instance" {
   }
 
   network_interface {
-    network = "default"
+    network    = google_compute_network.custom_vpc.id
+    subnetwork = google_compute_subnetwork.custom_subnet.id
 
     access_config {
-      // Ephemeral public IP
+      # Ephemeral public IP
     }
   }
 
-  # metadata = {
-  #   foo = "bar"
-  # }
+  metadata_startup_script = <<-EOT
+    #!/bin/bash
+    echo hi > /var/log/test.txt
 
-  metadata_startup_script = "echo hi > /var/log/test.txt"
+    # Update system
+    sudo apt-get update
+
+    # Install NGINX
+    sudo apt-get install -y nginx
+
+    # Start and enable NGINX
+    sudo systemctl start nginx
+    sudo systemctl enable nginx
+  EOT
 }
+
+
+
+# === default network firewall rules and a VM instance ===
+# resource "google_compute_firewall" "allow-ssh" {
+#   name    = "allow-ssh"
+#   network = "default"
+
+#   allow {
+#     protocol = "tcp"
+#     ports    = ["22"]
+#   }
+
+#   source_ranges = ["0.0.0.0/0"]  # Open to all IPs
+#   target_tags   = ["allow-ssh"]
+#   direction     = "INGRESS"
+# }
+
+# resource "google_compute_firewall" "allow-http" {
+#   name    = "allow-http"
+#   network = "default"
+
+#   allow {
+#     protocol = "tcp"
+#     ports    = ["80"]
+#   }
+
+#   source_ranges = ["0.0.0.0/0"]
+#   target_tags   = ["allow-http"]
+#   direction     = "INGRESS"
+# }
+
+# resource "google_compute_firewall" "allow-https" {
+#   name    = "allow-https"
+#   network = "default"
+
+#   allow {
+#     protocol = "tcp"
+#     ports    = ["443"]
+#   }
+
+#   source_ranges = ["0.0.0.0/0"]
+#   target_tags   = ["allow-https"]
+#   direction     = "INGRESS"
+# }
+
+# resource "google_compute_instance" "vm_instance" {
+#   name         = "ak-tf-compute-instance"
+#   machine_type = "e2-micro"  # Modern free-tier eligible
+#   zone         = "asia-south1-a"
+
+#   tags = ["ak", "tf", "compute-instance", "allow-ssh", "allow-http", "allow-https"]
+
+#   boot_disk {
+#     initialize_params {
+#       image = "debian-cloud/debian-11"
+#       size  = 10
+#       labels = {
+#         my_label = "value"
+#       }
+#     }
+#   }
+
+#   network_interface {
+#     network = "default"
+
+#     access_config {
+#       // Ephemeral public IP
+#     }
+#   }
+
+#   # metadata = {
+#   #   foo = "bar"
+#   # }
+
+#   metadata_startup_script = "echo hi > /var/log/test.txt"
+# }
