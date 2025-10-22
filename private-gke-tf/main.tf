@@ -256,7 +256,7 @@ resource "google_service_account" "gke_nodes" {
 # IAM bindings for GKE node service account
 resource "google_project_iam_member" "gke_node_sa_log_writer" {
   project = var.project_id
-  role    = "roles/owner"
+  role    = "roles/editor"
   member  = "serviceAccount:${google_service_account.gke_nodes.email}"
 }
 
