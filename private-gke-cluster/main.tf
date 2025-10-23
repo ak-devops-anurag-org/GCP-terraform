@@ -21,7 +21,6 @@ resource "google_compute_network" "ak_vpc" {
   auto_create_subnetworks = false
   description             = "ak vpc for private gke"
   routing_mode            = "REGIONAL"
-  # mtu                     = 1460
 }
 
 # 2. Subnet
@@ -42,12 +41,6 @@ resource "google_compute_subnetwork" "ak_vpc_subnet" {
     ip_cidr_range = "10.30.0.0/16"
   }
 
-  # This secondary range is for the GKE cluster's internal pods
-  # GKE will manage the actual reservation, we just define the intent here
-  # secondary_ip_range {
-  #   range_name    = "gke-ak-private-gke-cluster-pods-be178aac"
-  #   ip_cidr_range = "10.16.0.0/14"
-  # }
 }
 
 # 3. Router for NAT
@@ -73,41 +66,35 @@ resource "google_compute_router_nat" "ak_gke_nat_gateway" {
   # as it was AUTO_ONLY. If static IPs were desired, they would be listed here.
 }
 
-# 5. GKE Private Cluster
+############################################################
+# 1. Private GKE Cluster
+############################################################
 resource "google_container_cluster" "ak_private_gke_cluster" {
   name     = "ak-private-gke-cluster"
-  location = "asia-south2-a"
+  location = "asia-south2-b"
 
   network    = google_compute_network.ak_vpc.self_link
   subnetwork = google_compute_subnetwork.ak_vpc_subnet.self_link
 
-  # Basic cluster settings
-  initial_node_count = 1 # Managed by the default node pool below
-  remove_default_node_pool = true
-  # Ensure the default node pool is removed as we define our own below
-  # min_master_version = "1.33.5-gke.1080000" # Use a specific version or allow GKE to choose
-  
+  initial_node_count      = 1
 
-  logging_service   = "none" 
-  monitoring_service = "none" 
+  remove_default_node_pool = true
+  deletion_protection      = false
 
   release_channel {
     channel = "REGULAR"
   }
 
-  # IP Allocation Policy
+  # IP Allocation Policy (must match your subnet secondary ranges)
   ip_allocation_policy {
-    cluster_secondary_range_name = "ak-gke-pods-range" # pods
-    services_secondary_range_name = "ak-gke-services-range" # services
+    cluster_secondary_range_name  = "ak-gke-pods-range"
+    services_secondary_range_name = "ak-gke-services-range"
   }
 
-  # Private Cluster Configuration
   private_cluster_config {
-    enable_private_nodes = true
-    enable_private_endpoint = true # Allows internal access to control plane
-    master_ipv4_cidr_block = "10.10.0.0/28" # A small CIDR for master in the primary subnet
-    # gke-cluster.json shows the private_endpoint: 10.10.0.2 but Terraform doesn't allow setting it directly.
-    # It will be assigned from the master_ipv4_cidr_block.
+    enable_private_nodes    = true
+    enable_private_endpoint = true
+    # master_ipv4_cidr_block  = "10.10.0.0/28" # Required for private endpoint mode
   }
 
   master_authorized_networks_config {
@@ -117,70 +104,41 @@ resource "google_container_cluster" "ak_private_gke_cluster" {
     }
   }
 
-  # Default Node Config (applied if no node_pool block is defined, or as defaults for node_pool)
-  # This section reflects the 'nodeConfig' within 'gke-cluster.json'
-  # node_config {
-  #   machine_type = "e2-micro"
-  #   disk_size_gb = 10
-  #   disk_type    = "pd-balanced"
-  #   service_account = "default" # default service account used by the original config
-
-  #   oauth_scopes = [
-  #     "https://www.googleapis.com/auth/devstorage.read_only",
-  #     "https://www.googleapis.com/auth/logging.write",
-  #     "https://www.googleapis.com/auth/monitoring",
-  #     "https://www.googleapis.com/auth/service.management.readonly",
-  #     "https://www.googleapis.com/auth/servicecontrol",
-  #     "https://www.googleapis.com/auth/trace.append",
-  #     "https://www.googleapis.com/auth/cloud-platform" # Added cloud-platform scope as it's common for GKE nodes
-  #   ]
-
-  #   shielded_instance_config {
-  #     enable_integrity_monitoring = true
-  #   }
-
-  #   metadata = {
-  #     disable-legacy-endpoints = "true"
-  #   }
-  # }
-
-  # Addons
-  # addons_config {
-  #   http_load_balancing {
-  #     disabled = false # Default to enabled for typical use cases
-  #   }
-  #   gce_persistent_disk_csi_driver_config {
-  #     enabled = true
-  #   }
-  #   network_policy_config {
-  #     disabled = true
-  #   }
-  # }
-
-
-
-  # Workload Identity Config
   workload_identity_config {
-    # No specific configuration provided, GKE will set up default Workload Identity if enabled.
-    # If a specific pool needed it, we would configure it there.
+    workload_pool = "ak-here.svc.id.goog"
   }
-  
+
+  logging_config {
+    enable_components = []
+  }
+
+  monitoring_config {
+    enable_components = []
+  }
+
+  # Required to avoid race conditions with NAT setup
+  depends_on = [
+    google_compute_network.ak_vpc,
+    google_compute_subnetwork.ak_vpc_subnet
+  ]
 }
 
-# 6. Node Pool
+############################################################
+# 2. Node Pool
+############################################################
 resource "google_container_node_pool" "ak_gke_cluster_node_pool" {
-  name       = "ak-gke-cluster-node-pool"
-  location   = "asia-south2-a"
-  cluster    = google_container_cluster.ak_private_gke_cluster.name
-  node_count = 1 # As per initialNodeCount in all-node-pools.json
+  name     = "ak-gke-cluster-node-pool"
+  cluster  = google_container_cluster.ak_private_gke_cluster.name
+  location = "asia-south2-b"
+
+  node_count = 1
 
   node_config {
-    machine_type = "e2-micro"
-    disk_size_gb = 10
-    disk_type    = "pd-balanced"
+    machine_type    = "e2-micro"
+    disk_size_gb    = 15
+    disk_type       = "pd-balanced"
+    image_type      = "COS_CONTAINERD"
     service_account = "sa-bastion-vm@ak-here.iam.gserviceaccount.com"
-    # image_type   = "COS_CONTAINERD"
-    # service_account = "default" # default service account used by the original config
 
     oauth_scopes = [
       "https://www.googleapis.com/auth/devstorage.read_only",
@@ -189,13 +147,22 @@ resource "google_container_node_pool" "ak_gke_cluster_node_pool" {
       "https://www.googleapis.com/auth/service.management.readonly",
       "https://www.googleapis.com/auth/servicecontrol",
       "https://www.googleapis.com/auth/trace.append",
-      "https://www.googleapis.com/auth/cloud-platform" # Added cloud-platform scope as it's common for GKE nodes
+      "https://www.googleapis.com/auth/cloud-platform"
     ]
+
+    metadata = {
+      disable-legacy-endpoints = "true"
+    }
+
+    shielded_instance_config {
+      enable_integrity_monitoring = true
+      enable_secure_boot          = false
+    }
   }
 
   autoscaling {
-    max_node_count = 1 # No specific autoscaling range, so keeping it fixed at 1 for cost saving.
     min_node_count = 1
+    max_node_count = 1
   }
 
   management {
@@ -203,19 +170,109 @@ resource "google_container_node_pool" "ak_gke_cluster_node_pool" {
     auto_upgrade = true
   }
 
-  # upgrade_settings {
-  #   max_surge_utilization = 1 # 1 max_surge implies max_surge_utilization = 1.0
-  #   strategy              = "SURGE"
-  # }
-
-  # Ensure the node pool uses private nodes
-  network_config {
-    enable_private_nodes = true
-    pod_ipv4_cidr_block = google_compute_subnetwork.ak_vpc_subnet.secondary_ip_range[0].ip_cidr_range
-    pod_range = google_compute_subnetwork.ak_vpc_subnet.secondary_ip_range[0].range_name
-    subnetwork = google_compute_subnetwork.ak_vpc_subnet.self_link
+  upgrade_settings {
+    max_surge       = 1
+    max_unavailable = 0
   }
+
+  depends_on = [
+    google_container_cluster.ak_private_gke_cluster
+  ]
 }
+
+
+# # 5. GKE Private Cluster
+# resource "google_container_cluster" "ak_private_gke_cluster" {
+#   name     = "ak-private-gke-cluster"
+#   location = "asia-south2-a"
+
+#   network    = google_compute_network.ak_vpc.self_link
+#   subnetwork = google_compute_subnetwork.ak_vpc_subnet.self_link
+
+#   # Basic cluster settings
+#   initial_node_count = 1 # Managed by the default node pool below
+#   remove_default_node_pool = true
+  
+#   deletion_protection = false
+  
+#   logging_service   = "none" 
+#   monitoring_service = "none" 
+
+#   release_channel {
+#     channel = "REGULAR"
+#   }
+
+#   # IP Allocation Policy
+#   ip_allocation_policy {
+#     cluster_secondary_range_name = "ak-gke-pods-range" # pods
+#     services_secondary_range_name = "ak-gke-services-range" # services
+#   }
+
+#   # Private Cluster Configuration
+#   private_cluster_config {
+#     enable_private_nodes = true
+#     enable_private_endpoint = true # Allows internal access to control plane
+#     # master_ipv4_cidr_block = "10.10.0.0/28" # A small CIDR for master in the primary subnet
+#   }
+
+#   master_authorized_networks_config {
+#     cidr_blocks {
+#       display_name = "primary-subnet"
+#       cidr_block   = google_compute_subnetwork.ak_vpc_subnet.ip_cidr_range
+#     }
+#   }
+
+#   # Workload Identity Config
+#   workload_identity_config {
+#     # No specific configuration provided, GKE will set up default Workload Identity if enabled.
+#     # If a specific pool needed it, we would configure it there.
+#   }
+
+#   # depends_on = [ google_compute_router_nat.ak_gke_nat_gateway, google_compute_router.ak_gke_router ]
+  
+# }
+
+# # 6. Node Pool
+# resource "google_container_node_pool" "ak_gke_cluster_node_pool" {
+#   name       = "ak-gke-cluster-node-pool"
+#   location   = "asia-south2-a"
+#   cluster    = google_container_cluster.ak_private_gke_cluster.name
+#   node_count = 1 # As per initialNodeCount in all-node-pools.json
+
+#   node_config {
+#     machine_type = "e2-micro"
+#     disk_size_gb = 10
+#     disk_type    = "pd-balanced"
+#     service_account = "sa-bastion-vm@ak-here.iam.gserviceaccount.com"
+#     # image_type   = "COS_CONTAINERD"
+#     # service_account = "default" # default service account used by the original config
+
+#     oauth_scopes = [
+#       "https://www.googleapis.com/auth/devstorage.read_only",
+#       "https://www.googleapis.com/auth/logging.write",
+#       "https://www.googleapis.com/auth/monitoring",
+#       "https://www.googleapis.com/auth/service.management.readonly",
+#       "https://www.googleapis.com/auth/servicecontrol",
+#       "https://www.googleapis.com/auth/trace.append",
+#       "https://www.googleapis.com/auth/cloud-platform" # Added cloud-platform scope as it's common for GKE nodes
+#     ]
+#   }
+
+#   autoscaling {
+#     max_node_count = 1 # No specific autoscaling range, so keeping it fixed at 1 for cost saving.
+#     min_node_count = 1
+#   }
+
+#   management {
+#     auto_repair  = true
+#     auto_upgrade = true
+#   }
+
+#   # Ensure the node pool uses private nodes
+#   # network_config {
+#   #   enable_private_nodes = true
+#   # }
+# }
 
 # 7. Firewall Rule for Bastion SSH Access
 # This rule allows SSH from anywhere (0.0.0.0/0) to instances tagged with 'bastion-host'.
